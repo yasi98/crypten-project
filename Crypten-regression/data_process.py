@@ -3,6 +3,7 @@ from typing import List, Dict, Tuple
 from sklearn.model_selection import train_test_split
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 
 
 def load_data(data_file: str) -> pd.DataFrame:
@@ -32,15 +33,15 @@ def preprocess_data(df: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, Dict[str, f
     features = df.drop(columns=['motor_UPDRS', 'total_UPDRS'])
         # Extract Labels ('motor_UPDRS' and 'total_UPDRS' columns)
     labels = df[['motor_UPDRS', 'total_UPDRS']]
-    # Calculate and save mean and std for normalization
 
+    # Calculate and save mean and std for normalization
     mean_std = {}
     for col in df.columns:
         if col != "sex":  # Exclude 'sex' from normalization
             mean = df[col].mean()
             std = df[col].std()
             mean_std[col] = {"mean": mean, "std": std}
-            df[col] = (df[col] - mean) / std
+            df[col] = (df[col] - mean) / std    # Normalize the data
 
     # Convert DataFrame to numpy array
     arr = df.to_numpy(dtype=np.float32)
@@ -53,29 +54,46 @@ def preprocess_data(df: pd.DataFrame) -> Tuple[np.ndarray, Dict[str, Dict[str, f
 
 
 
+def raw_data_plot(df: pd.DataFrame):
+    """
+    Plot the raw data from the Parkinson's dataset. takes a Pandas dataframe 
+    """
+    sample_data = df.iloc[1:, 1:10]
+    # Create a scatter plot for each column in the DataFrame
+    plt.figure(figsize=(10, 6))  # Set the figure size
+    # Iterate over each column in the DataFrame (excluding non-numeric columns)
+    for i, column in enumerate(sample_data.columns[:-1]):
+    # Define a unique color for each column
+        color = plt.cm.get_cmap('tab10')(i / len(sample_data.columns[:-1]))  # Use tab10 colormap for colors
+        # Plot the data points for the current column
+        plt.scatter(sample_data.index, sample_data[column], color=color, label=column)
+    # Add labels and title to the plot
+    plt.xlabel('Data Point Index')
+    plt.ylabel('Value')
+    plt.title('Raw Data')
+    plt.grid(True)
+    plt.legend()
+    plt.show()
 
-
-""" def split_feature(arr: np.ndarray, mean_std: Dict[str, Dict[str, float]], save_path: str)-> Tuple[np.ndarray, ...]:
-    
- #   Save the preprocessed datasets to numpy .npz files
-    # Ensure the directory exists
-    os.makedirs(save_path, exist_ok=True)
-
-    # Split features and labels
-    # Extract Features (all columns except 'motor_UPDRS' and 'total_UPDRS')
-    features = df.drop(columns=['motor_UPDRS', 'total_UPDRS'])
-
-    # Extract Labels ('motor_UPDRS' and 'total_UPDRS' columns)
-    labels = df[['motor_UPDRS', 'total_UPDRS']]
-
-    np.savez(f"{save_path}/features.npz", features)
-    np.savez(f"{save_path}/labels.npz", labels)
-    features_arr = features.to_numpy()
-    labels_arr = labels.to_numpy()
-
-    return features_arr, labels_arr """
-
-
+def normalized_array_plot(arr: np.ndarray):
+    """
+    Plot the normalized array from the Parkinson's dataset. takes a numpy array
+    """
+    sample_data = arr[:, :6]
+    # Create a scatter plot for each column in the DataFrame
+    plt.figure(figsize=(10, 6))  # Set the figure size
+    # Iterate over each column in the DataFrame (excluding non-numeric columns)
+    for i in range(sample_data.shape[1]):
+    # Define a unique color for each column
+        color = plt.cm.get_cmap('tab10')(i / sample_data.shape[1])  # Use tab10 colormap for colors
+        # Plot the data points for the current column
+        plt.scatter(sample_data[:, i], range(sample_data.shape[0]), color=color, label=f"Column {i}")
+    # Add labels and title to the plot
+    plt.ylabel('Data Point Index')
+    plt.xlabel('Value')
+    plt.title('Normalized Data')
+    plt.grid(True)
+    plt.show()
 
 
 
@@ -90,9 +108,16 @@ if __name__ == '__main__':
 
     # Display the first few rows of the DataFrame to inspect the loaded data
     print(df.head())
+    
+    raw_data_plot(df)
+
+
     # Preprocess the dataset
     arr, mean_std, features, labels = preprocess_data(df)
-    #print("shape of arr", arr.shape)
+    print("shape of arr", arr.shape)
+  
+    #normalized_array_plot(arr)
+    
 
     # data, label = split_feature(arr, mean_std, "parkinson")
     print("shape of data", features.shape)

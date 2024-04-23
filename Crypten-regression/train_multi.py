@@ -4,17 +4,23 @@ import crypten
 import crypten.communicator as comm
 import numpy as np
 import torch
+import torch.optim as optim
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-
+import lime
+import lime.lime_tabular
 from data_utils import crypten_collate
 from model import MLP
+from collections import defaultdict, OrderedDict
 
 # Define dataset names and corresponding feature sizes
 names = ["a", "b", "c"]
 feature_sizes = [11, 10, 2]
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+print('Using device:', device)
 
 # Function to load local tensor data
 def load_local_tensor(filename: str) -> torch.Tensor:
@@ -22,7 +28,7 @@ def load_local_tensor(filename: str) -> torch.Tensor:
     if filename.endswith(".npz"):
         arr = arr["arr_0"]
     arr = np.copy(arr)  # Make a writable copy of the array
-    tensor = torch.tensor(arr, dtype=torch.float32)
+    tensor = torch.tensor(arr, dtype=torch.float32).to(device)
     return tensor
 
 # Function to load encrypted tensor data
@@ -38,7 +44,7 @@ def load_encrypt_tensor(filename: str) -> crypten.CrypTensor:
                 f"{name} feature size should be {feature_size}, but get {local_tensor.shape[1]}"
             tensor = crypten.cryptensor(local_tensor, src=i)
         else:
-            dummy_tensor = torch.zeros((count, feature_size), dtype=torch.float32)
+            dummy_tensor = torch.zeros((count, feature_size), dtype=torch.float32).to(device)
             tensor = crypten.cryptensor(dummy_tensor, src=i)
         encrypt_tensors.append(tensor)
 
@@ -63,9 +69,9 @@ def make_mpc_model(local_model: torch.nn.Module, sample_input: torch.Tensor):
 def make_mpc_dataloader(filename: str, batch_size: int, shuffle: bool = False, drop_last: bool = False) -> DataLoader:
     
     mpc_tensor = load_encrypt_tensor(filename)
-    feature= mpc_tensor[:, [0,1,2,5,6,7,8,9,10,11,12,13,14,15,16,17,18]]
+    feature= mpc_tensor[:, [0,1,2,5,6,7,8,9,10,11,12,13,14,15,16,17,18]].to(device)
     #uses a custom collation function for combining individual data samples into batches and a specified random number generator for shuffling the data.
-    label = mpc_tensor[:, [3, 4]]
+    label = mpc_tensor[:, [3, 4]].to(device)  # Selecting columns 3 and 4 as labels
     dataset = TensorDataset(feature, label)
     # Generate a random seed for the dataloader
     seed = (crypten.mpc.MPCTensor.rand(1) * (2 ** 32)).get_plain_text().int().item()
@@ -81,14 +87,22 @@ def make_mpc_dataloader(filename: str, batch_size: int, shuffle: bool = False, d
 def train_mpc(dataloader: DataLoader, model: crypten.nn.Module, loss: crypten.nn.Module, lr: float):
     total_loss = None
     count = len(dataloader)
-
+    gradients = []
     model.train()
     for xs, ys in tqdm(dataloader, file=sys.stdout):
+        
+        xs = xs.to(model.src.device)
+        ys = ys.to(model.src.device)
+        xs.requires_grad = True
         out = model(xs)
         loss_val = loss(out, ys)
 
         model.zero_grad()
+   
         loss_val.backward()
+        #optimizer.step()
+        gradients.append(xs.grad.clone())
+        #gradient_dict[name] = param.grad.clone().detach()
         model.update_parameters(lr)
 
 
@@ -99,21 +113,28 @@ def train_mpc(dataloader: DataLoader, model: crypten.nn.Module, loss: crypten.nn
             total_loss = loss_val.detach()
         else:
             total_loss += loss_val.detach()
+    if gradients:
+        gradients_tensor = crypten.cat(gradients, dim=0)
+        abs_gradients = torch.abs(gradients_tensor.get_plain_text())
+        mean_gradients = abs_gradients.mean(dim=0)
 
     total_loss = total_loss.get_plain_text().item()
-    return total_loss / count
+    return total_loss / count, mean_gradients
 
 # Function to validate the MPC model
 def validate(dataloader: DataLoader, model: crypten.nn.Module, loss: crypten.nn.Module):
+
     model.eval()
     pred_ys = []
     true_ys = []
     total_loss = None
     count = len(dataloader)
     for xs, ys in tqdm(dataloader, file=sys.stdout):
+        
         out = model(xs)
         loss_val = loss(out, ys)
-
+        loss_val.backward()  # Compute gradients
+    
         pred_ys.append(out)
         true_ys.append(ys)
 
@@ -139,40 +160,30 @@ def validate(dataloader: DataLoader, model: crypten.nn.Module, loss: crypten.nn.
     mse = mean_squared_error(true_ys, pred_ys)
     mae = mean_absolute_error(true_ys, pred_ys)
     r2 = r2_score(true_ys, pred_ys)
+
+    #gradients = [param.grad.get_plain_text().abs().mean() for param in model.parameters()]
     
     return total_loss / count, mse, mae, r2
 
 
-def test():
-    crypten.init()
-    filename = "parkinson/parkinson.test.npz"
-
-    mpc_tensor = load_encrypt_tensor(filename)
-    feature, label = mpc_tensor[:32, :-1], mpc_tensor[:32, -1]
-    print(feature.shape, feature.ptype)
-
-    model = MLP()
-    mpc_model = make_mpc_model(model)
-    loss = crypten.nn.MSELoss()
-
-    mpc_model.train()
-    out = mpc_model(feature)
-    prob = out.sigmoid()
-    loss_val = loss(prob, label)
-
-    mpc_model.zero_grad()
-    loss_val.backward()
-    mpc_model.update_parameters(1e-3)
-
 
 def main():
-    epochs = 50
-    batch_size = 32
+
+
+    epochs = 150
+    batch_size = 20
     lr = 1e-3
     eval_every = 1
-    # List to store training losses
+    # List to store performance metrics
     training_losses = []  
+    all_grads = []
+    val_losses = []
+    all_mse = []
+    all_mae = []
+    all_r2 = []
+ 
     crypten.init()
+    crypten.common.serial.register_safe_class(MLP)
 
     rank = comm.get().get_rank()
     name = names[rank]
@@ -187,23 +198,32 @@ def main():
     # print("sample input size", sample_input.shape)
     # input_size = sample_input.shape[1] 
     
-    model = MLP(input_size=17)
+    model = MLP(input_size=17).to(device)
+    #optimizer = crypten.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     mpc_model = make_mpc_model(model, sample_input=sample_input)
     mpc_loss = crypten.nn.MSELoss()
-
+    
     for epoch in range(epochs):
     #for batch_X, batch_y in train_dataloader:
-        train_loss = train_mpc(train_dataloader, mpc_model, mpc_loss, lr)
+        train_loss, gradients = train_mpc(train_dataloader, mpc_model, mpc_loss, lr)
         print(f"epoch: {epoch}, train loss: {train_loss}")
         training_losses.append(train_loss)
+        all_grads.append(gradients)
 
         if epoch % eval_every == 0:
             validate_loss, mse, mae, r2= validate(test_dataloader, mpc_model, mpc_loss)
             print(f"epoch: {epoch}, validate loss: {validate_loss}, MSE: {mse}, MAE: {mae}")
+            val_losses.append(validate_loss)
+            all_mse.append(mse)
+            all_mae.append(mae)
+            all_r2.append(r2)
+   
  
     final_loss, mse, mae, r2 = validate(test_dataloader, mpc_model, mpc_loss)
+    #feature_importance_scores = torch.abs(gradients.get_plain_text()).mean(dim=0)  # Mean absolute value of gradients
     print(f"MSE: {mse}, MAE: {mae}, R2: {r2}")
     print('training loss', training_losses)
+    print('validation loss', val_losses)
     #   Plot the training loss as a function of epoch
     plt.plot(range(1, epochs+1), training_losses, label='Training Loss')
     plt.xlabel('Epoch')
@@ -213,9 +233,77 @@ def main():
     plt.grid(True)
     plt.show()
 
+    #plot mse, mae and r2 as function of epoch
+    plt.plot(range(1, epochs+1), all_mse, label='MSE', color='red')
+    plt.plot(range(1, epochs+1), all_mae, label='MAE', color='blue')
+    plt.plot(range(1, epochs+1), all_r2, label='R2', color='green')
+    plt.xlabel('Epoch')
+    plt.ylabel('Metrics')
+    plt.title('Metrics vs. Epoch')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
+
   
+    feature_names = [
+        "age", "sex", "test_time",
+        "Jitter(%)", "Jitter(Abs)", "Jitter:RAP", "Jitter:PPQ5", "Jitter:DDP",
+        "Shimmer", "Shimmer(dB)", "Shimmer:APQ3", "Shimmer:APQ5", "Shimmer:APQ11", "Shimmer:DDA",
+        "NHR", "HNR", "RPDE", "DFA", "PPE"
+    ]
+    all_grads.append(gradients)
+    if all_grads:
+        all_grads = torch.stack(all_grads)
+        feature_importance_scores = torch.abs(all_grads).mean(dim=0)
+    feature_importance_pairs = list(zip(feature_names, feature_importance_scores))
+    feature_importance_pairs.sort(key=lambda x: x[1], reverse=True)
+    print("Top 5 Features:")
+    for i, (name, score) in enumerate(feature_importance_pairs[:5]):
+        print(f"{i+1}. {name}: {score.item()}")
+
+
+
+
+    # Create a LIME explainer
+    def predict_fn(x, model: crypten.nn.Module):
+        model = model.decrypt()
+        # Convert input data to a tensor and perform necessary preprocessing
+        input_tensor = torch.tensor(x, dtype=torch.float32)
+        print("shape of input", input_tensor.shape)
+    # Use the decrypted model to make predictions
+        with crypten.no_grad():
+            predictions = model(input_tensor)
+            # Convert encrypted predictions to plaintext
+            predictions = predictions.numpy()
+
+        return predictions
+
+
+    train = train_dataloader.dataset.tensors[0]
+    train = train.get_plain_text().numpy()
+    explainer = lime.lime_tabular.LimeTabularExplainer(train, feature_names=feature_names, class_names=['motor_UPDRSA','total_UPDRS'], verbose=True, mode='regression')
+    # Select an instance from the test dataset for explanation (e.g., index 25)
+    #instance_to_explain = make_mpc_dataloader
+    instance = train[25]
+    print("shape of instance", instance.shape)
+    #print("type of model", type(mpc_model))
+    exp = explainer.explain_instance(instance, lambda x: predict_fn(x, mpc_model), num_features=len(feature_names))
+    #exp.show_in_notebook(show_table=True)
+    exp.save_to_file('lime_explanation.html')
     
-     
+
+    
+    # print("length of names", len(feature_names), "length of scores", len(feature_importance_scores))
+    # #feature ranking plot
+    # plt.bar(feature_names, np.array(feature_importance_scores), color='orange')
+    # plt.xlabel('Feature Name')
+    # plt.ylabel('Importance Score (Mean Absolute Gradient)')
+    # plt.title('Feature Ranking')
+    # #plt.gca().invert_yaxis()  # Invert y-axis to display the most important feature on top
+    # plt.legend()
+    # plt.grid(True)
+    # plt.show()   
 
 
 

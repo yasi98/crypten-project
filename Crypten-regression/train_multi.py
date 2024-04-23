@@ -91,8 +91,6 @@ def train_mpc(dataloader: DataLoader, model: crypten.nn.Module, loss: crypten.nn
     model.train()
     for xs, ys in tqdm(dataloader, file=sys.stdout):
         
-        xs = xs.to(model.src.device)
-        ys = ys.to(model.src.device)
         xs.requires_grad = True
         out = model(xs)
         loss_val = loss(out, ys)

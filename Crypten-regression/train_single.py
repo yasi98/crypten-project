@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 import matplotlib.pyplot as plt 
 from model import MLP
-from sklearn.metrics import confusion_matrix, mean_squared_error, mean_absolute_error, r2_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 import pandas as pd
 
 
@@ -76,20 +76,27 @@ def validate(dataloader: DataLoader, model: torch.nn.Module, loss: torch.nn.Modu
     return total_loss / count, mse, mae, r2
 
 
+
+
+
 if __name__ == '__main__':
     train_filename = "parkinson/parkinson.train.npz" #train and test only include features
     test_filename = "parkinson/parkinson.test.npz"
-    epochs = 50
-    batch_size = 32
+    epochs = 150
+    batch_size = 22
     lr = 1e-3
     eval_every = 1
     # List to store training losses
     training_losses = []  
+    val_losses = []
+    all_mse = []
+    all_mae = []
+    all_r2 = []
      
     train_dataloader = make_dataloader(train_filename, "train", batch_size=batch_size, shuffle=True, drop_last=True)
     test_dataloader = make_dataloader(test_filename, "test", batch_size=batch_size, shuffle=False, drop_last=False)
 
-    mlp = MLP()
+    mlp = MLP(input_size=17)
     loss = torch.nn.MSELoss()
     optimizer = optim.Adam(mlp.parameters(), lr)
 
@@ -100,7 +107,14 @@ if __name__ == '__main__':
         if epoch % eval_every == 0:
             validate_loss, mse, mae, r2= validate(test_dataloader, mlp, loss)
             print(f"epoch: {epoch}, validate loss: {validate_loss}, MSE: {mse}, MAE: {mae}")
+            val_losses.append(validate_loss)
+            all_mse.append(mse)
+            all_mae.append(mae)
+            all_r2.append(r2)
   
+    print(f"Training Losses: {training_losses}")
+    print(f"Validation Losses: {val_losses}")
+
     # Plot the training loss as a function of epoch
     plt.plot(range(1, epochs+1), training_losses, label='Training Loss')
     plt.xlabel('Epoch')
@@ -109,6 +123,18 @@ if __name__ == '__main__':
     plt.legend()
     plt.grid(True)
     plt.show()
+
+    #plot mse, mae and r2 as function of epoch
+    plt.plot(range(1, epochs+1), all_mse, label='MSE', color='red')
+    plt.plot(range(1, epochs+1), all_mae, label='MAE', color='blue')
+    plt.plot(range(1, epochs+1), all_r2, label='R2', color='green')
+    plt.xlabel('Epoch')
+    plt.ylabel('Metrics')
+    plt.title('Metrics vs. Epoch')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
     
     final_loss, mse, mae, r2 = validate(test_dataloader, mlp, loss)
     print(f"MSE: {mse}, MAE: {mae}, R2: {r2}")

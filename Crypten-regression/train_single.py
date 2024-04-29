@@ -84,7 +84,7 @@ if __name__ == '__main__':
     test_filename = "parkinson/parkinson.test.npz"
     epochs = 150
     batch_size = 22
-    lr = 1e-3
+    lr = 1e-4
     eval_every = 1
     # List to store training losses
     training_losses = []  
